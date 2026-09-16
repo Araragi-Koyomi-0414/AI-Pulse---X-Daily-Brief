@@ -1559,11 +1559,14 @@ async function requestGeminiReportOnce({ apiKey, model, prompt }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000); // 5 minutes (Gemini 3 thinking + large output needs more time)
   const llmApiUrl = optionalEnv('LLM_API_URL');
-  const chatCompletionsUrl = llmApiUrl
-    ? (/\/v1\/chat\/completions\/?$/i.test(llmApiUrl)
-        ? llmApiUrl
-        : `${llmApiUrl.replace(/\/+$/, '')}/v1/chat/completions`)
-    : '';
+  const normalizedLlmApiUrl = llmApiUrl.replace(/\/+$/, '');
+  const chatCompletionsUrl = !normalizedLlmApiUrl
+    ? ''
+    : /\/v1\/chat\/completions$/i.test(normalizedLlmApiUrl)
+      ? normalizedLlmApiUrl
+      : /\/v1$/i.test(normalizedLlmApiUrl)
+        ? `${normalizedLlmApiUrl}/chat/completions`
+        : `${normalizedLlmApiUrl}/v1/chat/completions`;
 
   if (chatCompletionsUrl) {
     let response;
@@ -1583,6 +1586,9 @@ async function requestGeminiReportOnce({ apiKey, model, prompt }) {
         }),
         signal: controller.signal,
       });
+    } catch (err) {
+      const cause = err?.cause?.message || err?.cause?.code || '';
+      throw new Error(cause ? `${err.message}: ${cause}` : err.message, { cause: err });
     } finally {
       clearTimeout(timeout);
     }
