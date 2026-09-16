@@ -1558,6 +1558,46 @@ function getPromptTemplate() {
 async function requestGeminiReportOnce({ apiKey, model, prompt }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000); // 5 minutes (Gemini 3 thinking + large output needs more time)
+  const llmApiUrl = optionalEnv('LLM_API_URL');
+  const chatCompletionsUrl = llmApiUrl
+    ? (/\/v1\/chat\/completions\/?$/i.test(llmApiUrl)
+        ? llmApiUrl
+        : `${llmApiUrl.replace(/\/+$/, '')}/v1/chat/completions`)
+    : '';
+
+  if (chatCompletionsUrl) {
+    let response;
+    try {
+      response = await fetch(chatCompletionsUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: Number(process.env.GEMINI_TEMPERATURE || 1.0),
+          max_tokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 16384),
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!response.ok) throw new Error(`LLM request failed: ${response.status} ${await response.text()}`);
+    const json = await response.json();
+    const content = json?.choices?.[0]?.message?.content;
+    const text = (Array.isArray(content)
+      ? content.map((part) => part?.text || part?.content || '').join('\n')
+      : String(content || ''))
+      .trim();
+    if (!text) throw new Error('LLM returned empty textual output.');
+    return text;
+  }
+
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   // Gemini 3.x recommends temperature=1.0; lower values (e.g. 0.2) may cause
@@ -2133,7 +2173,12 @@ async function generateReport(items, top20, stats, peopleStats) {
 
   // NEW PATH: try embedding-based clustering first. If it succeeds, skip the
   // legacy "let Gemini cluster everything in one shot" path.
-  const useEmbedding = parseBooleanEnv(process.env.REPORT_USE_EMBEDDING_CLUSTER, true);
+  // The embedding path calls Google's native embedding API. Disable it by
+  // default when using an OpenAI-compatible gateway unless explicitly enabled.
+  const useEmbedding = parseBooleanEnv(
+    process.env.REPORT_USE_EMBEDDING_CLUSTER,
+    !optionalEnv('LLM_API_URL'),
+  );
   if (useEmbedding) {
     try {
       const embeddingMarkdown = await generateReportViaEmbedding({ items, apiKey, model });
